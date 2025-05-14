@@ -1,0 +1,217 @@
+CREATE OR REPLACE TYPE usuario_obj_type AS OBJECT (
+  id       NUMBER,
+  nombre   VARCHAR2(100),
+  correo   VARCHAR2(100),
+  password VARCHAR2(100)
+);
+
+CREATE OR REPLACE TYPE usuario_tab_type AS TABLE OF usuario_obj_type;
+
+SELECT object_name, object_type, status
+  FROM user_objects
+ WHERE object_name IN (
+   'TRG_USUARIOS_BEFORE_INSERT',
+   'TRG_ROLES_BEFORE_INSERT'
+ );
+
+
+-- Insertar roles
+CREATE OR REPLACE PROCEDURE insert_rol (p_nombre IN VARCHAR2) AS
+BEGIN
+  INSERT INTO roles_oracle(id, nombre)
+  VALUES(rol_oracle_seq.NEXTVAL, p_nombre);
+END insert_rol;
+/
+
+
+-- Trigger para roles_oracle
+CREATE OR REPLACE TRIGGER trg_roles_before_insert
+BEFORE INSERT ON roles_oracle
+FOR EACH ROW
+BEGIN
+  IF :NEW.id IS NULL THEN
+    :NEW.id := rol_oracle_seq.NEXTVAL;
+  END IF;
+END;
+/
+
+-- Insertar usaurios
+CREATE OR REPLACE PROCEDURE insert_usuario_con_rol_y_edad(
+    p_nombre   IN VARCHAR2,
+    p_correo   IN VARCHAR2,
+    p_password IN VARCHAR2,
+    p_edad     IN NUMBER,
+    p_rol_id   IN NUMBER
+) AS
+    v_new_id NUMBER;
+BEGIN
+    -- 1) Inserto el usuario y capturo su ID
+    INSERT INTO usuarios_oracle (id, nombre, correo, password, edad)
+    VALUES (usuario_oracle_seq.NEXTVAL, p_nombre, p_correo, p_password, p_edad)
+    RETURNING id INTO v_new_id;
+
+    -- 2) Asigno el rol que ya debe existir en roles_oracle
+    INSERT INTO usuario_oracle_roles (usuario_id, rol_id)
+    VALUES (v_new_id, p_rol_id);
+END insert_usuario_con_rol_y_edad;
+/
+
+
+-- Trigger para usuarios_oracle
+CREATE OR REPLACE TRIGGER trg_usuarios_before_insert
+BEFORE INSERT ON usuarios_oracle
+FOR EACH ROW
+BEGIN
+  IF :NEW.id IS NULL THEN
+    :NEW.id := usuario_oracle_seq.NEXTVAL;
+  END IF;
+END;
+/
+
+
+SELECT object_name, object_type, status
+  FROM user_objects
+ WHERE object_name = 'SP_INFO_USUARIO';
+
+
+-- 1. Listar usuarios
+CREATE OR REPLACE FUNCTION fn_listar_usuarios
+  RETURN usuario_tab_type
+  PIPELINED
+AS
+BEGIN
+  FOR r IN (SELECT id, nombre, correo, password FROM usuarios_oracle)
+  LOOP
+    PIPE ROW(
+      usuario_obj_type(r.id, r.nombre, r.correo, r.password)
+    );
+  END LOOP;
+  RETURN;
+END fn_listar_usuarios;
+/
+
+-- 2. Buscar usuarios por filtro
+CREATE OR REPLACE FUNCTION fn_buscar_usuarios_por_filtro(
+  p_filtro IN VARCHAR2
+) RETURN usuario_tab_type
+  PIPELINED
+AS
+BEGIN
+  FOR r IN (
+    SELECT id, nombre, correo, password
+      FROM usuarios_oracle
+     WHERE nombre LIKE '%'||p_filtro||'%'
+        OR correo LIKE '%'||p_filtro||'%'
+  ) LOOP
+    PIPE ROW(
+      usuario_obj_type(
+        r.id,
+        r.nombre,
+        r.correo,
+        r.password
+      )
+    );
+  END LOOP;
+  RETURN;
+END fn_buscar_usuarios_por_filtro;
+/
+
+-- 3. Obtener usuario por ID
+CREATE OR REPLACE FUNCTION fn_obtener_usuario_por_id(
+  p_id_usuario IN NUMBER
+) RETURN usuario_tab_type
+  PIPELINED
+AS
+BEGIN
+  FOR r IN (
+    SELECT id, nombre, correo, password
+      FROM usuarios_oracle
+     WHERE id = p_id_usuario
+  ) LOOP
+    PIPE ROW(
+      usuario_obj_type(r.id, r.nombre, r.correo, r.password)
+    );
+  END LOOP;
+  RETURN;
+END fn_obtener_usuario_por_id;
+/
+
+-- 4. Actualizar usuario
+CREATE OR REPLACE FUNCTION fn_actualizar_usuario(
+  p_id_usuario IN NUMBER,
+  p_nombre     IN VARCHAR2,
+  p_correo     IN VARCHAR2,
+  p_password   IN VARCHAR2
+) RETURN VARCHAR2 IS
+  v_dummy NUMBER;
+BEGIN
+  -- Verificar si el usuario existe
+  BEGIN
+    SELECT 1 INTO v_dummy FROM usuarios_oracle WHERE id = p_id_usuario;
+  EXCEPTION
+    WHEN NO_DATA_FOUND THEN
+      RETURN 'El usuario no existe';
+    WHEN OTHERS THEN
+      RETURN 'Error al verificar existencia: ' || SQLERRM;
+  END;
+
+  -- Actualizar usuario
+  BEGIN
+    UPDATE usuarios_oracle
+    SET nombre = p_nombre,
+        correo = p_correo,
+        password = p_password
+    WHERE id = p_id_usuario;
+
+    RETURN 'Usuario actualizado correctamente';
+  EXCEPTION
+    WHEN OTHERS THEN
+      RETURN 'Error al actualizar: ' || SQLERRM;
+  END;
+END;
+/
+
+
+-- 5. Eliminar usuario
+CREATE OR REPLACE PROCEDURE sp_eliminar_usuario (
+    p_id_usuario IN NUMBER
+) AS
+BEGIN
+    DELETE FROM usuarios_oracle WHERE id = p_id_usuario;
+END sp_eliminar_usuario;
+/
+
+ALTER TABLE usuarios_oracle
+  ADD (edad NUMBER NULL);
+
+-- 1 IN: p_id_usuario
+-- 4 OUT: p_nombre, p_correo, p_num_roles, p_edad
+CREATE OR REPLACE PROCEDURE sp_info_usuario(
+   p_id_usuario IN  NUMBER,
+   p_nombre     OUT VARCHAR2,
+   p_correo     OUT VARCHAR2,
+   p_num_roles  OUT NUMBER,
+   p_edad       OUT NUMBER
+) AS
+BEGIN
+   SELECT nombre, correo, edad
+     INTO p_nombre, p_correo, p_edad
+     FROM usuarios_oracle
+    WHERE id = p_id_usuario;
+
+   SELECT COUNT(*)
+     INTO p_num_roles
+     FROM usuario_oracle_roles
+    WHERE usuario_id = p_id_usuario;
+
+EXCEPTION
+   WHEN NO_DATA_FOUND THEN
+     p_nombre    := NULL;
+     p_correo    := NULL;
+     p_num_roles := 0;
+     p_edad      := NULL;
+END sp_info_usuario;
+/
+
+
+
