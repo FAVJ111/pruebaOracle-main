@@ -15,7 +15,7 @@ import org.springframework.stereotype.Repository;
 import ec.sasf.pruebaOracle.entity.UsuariosOracle;
 
 @Repository
-public interface UsuariosOracleRepository extends JpaRepository<UsuariosOracle, Long>, UsuariosOracleRepositoryCustom  {
+public interface UsuariosOracleRepository extends JpaRepository<UsuariosOracle, Long>, UsuariosOracleRepositoryCustom {
 
         @Modifying
         @Transactional
@@ -40,13 +40,8 @@ public interface UsuariosOracleRepository extends JpaRepository<UsuariosOracle, 
         Map<String, Object> obtenerUsuarioPorId(@Param("id_usuario") Long id);
 
         // --- ACTUALIZAR ---
-        @Modifying
-        @Transactional
-        @Query("UPDATE UsuariosOracle u SET u.nombre = :nombre, u.correo = :correo, u.password = :password WHERE u.id = :id")
-        int actualizarUsuario(@Param("id") Long id,
-                        @Param("nombre") String nombre,
-                        @Param("correo") String correo,
-                        @Param("password") String password);
+        //@Query(value = "SELECT fn_actualizar_usuario_json(:p_usuario_json) FROM dual", nativeQuery = true)
+        //String actualizarUsuario(@Param("p_usuario_json") String usuarioJson);
 
         // --- ELIMINAR ---
         @Modifying

@@ -7,6 +7,7 @@ import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
+import ec.sasf.pruebaOracle.dto.UsuarioDTO;
 import ec.sasf.pruebaOracle.service.UsuariosOracleService;
 
 @RestController
@@ -18,19 +19,8 @@ public class UsuariosOracleController {
 
     // Endpoint para insertar un nuevo usuario
     @PostMapping
-    public ResponseEntity<Map<String, String>> insertUsuario(
-            @RequestParam String nombre,
-            @RequestParam String correo,
-            @RequestParam String password,
-            @RequestParam Integer edad,
-            @RequestParam Long rolId
-    ) {
-        Map<String, String> response = usuariosOracleService.insertUsuario(nombre, correo, password, edad, rolId);
-
-        if (response.get("mensaje").contains("Error")) {
-            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(response);
-        }
-        return ResponseEntity.status(HttpStatus.CREATED).body(response);
+    public ResponseEntity<?> insertUsuario(@RequestBody UsuarioDTO dto) {
+        return usuariosOracleService.insertUsuario(dto);
     }
 
     // Obtener todos los usuarios
@@ -53,11 +43,11 @@ public class UsuariosOracleController {
 
     // Actualizar usuario
     @PutMapping("/{id}")
-    public ResponseEntity<?> actualizarUsuario(@PathVariable Long id,
-            @RequestParam String nombre,
-            @RequestParam String correo,
-            @RequestParam String password) {
-        return usuariosOracleService.actualizarUsuario(id, nombre, correo, password);
+    public ResponseEntity<?> actualizarUsuario(
+        @PathVariable Long id,
+        @RequestBody UsuarioDTO usuarioDTO
+    ) {
+        return usuariosOracleService.actualizarUsuario(id, usuarioDTO);
     }
 
     // Eliminar usuario
@@ -66,7 +56,7 @@ public class UsuariosOracleController {
         return usuariosOracleService.eliminarUsuario(id);
     }
 
-        @GetMapping("/{id}/info")
+    @GetMapping("/{id}/info")
     public ResponseEntity<?> infoUsuario(@PathVariable Long id) {
         return usuariosOracleService.obtenerInfoUsuario(id);
     }

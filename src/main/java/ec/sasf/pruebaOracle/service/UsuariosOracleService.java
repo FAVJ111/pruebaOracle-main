@@ -5,11 +5,19 @@ import java.util.Map;
 
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.dao.DataAccessException;
+import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.stereotype.Service;
 
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.ObjectMapper;
+
+import ec.sasf.pruebaOracle.dto.UsuarioActualizacionResponse;
+import ec.sasf.pruebaOracle.dto.UsuarioDTO;
+import ec.sasf.pruebaOracle.dto.UsuarioResponseDTO;
 import ec.sasf.pruebaOracle.entity.UsuariosOracle;
 import ec.sasf.pruebaOracle.repository.UsuariosOracleRepository;
+import ec.sasf.pruebaOracle.repository.UsuariosOracleRepositoryCustom;
 import jakarta.transaction.Transactional;
 
 @Service
@@ -18,19 +26,38 @@ public class UsuariosOracleService {
     @Autowired
     private UsuariosOracleRepository usuariosOracleRepository;
 
+    @Autowired
+    private UsuariosOracleRepositoryCustom customRepo;
+
+    @Autowired
+    private ObjectMapper objectMapper;
+
     // Método para insertar un nuevo usuario
-    // @Transactional
-    public Map<String, String> insertUsuario(
-            String nombre,
-            String correo,
-            String password,
-            Integer edad,
-            Long rolId) {
+    public ResponseEntity<?> insertUsuario(UsuarioDTO dto) {
         try {
-            usuariosOracleRepository.insertUsuarioConRolYEdad(nombre, correo, password, edad, rolId);
-            return Map.of("mensaje", "Usuario registrado con éxito");
+            Long nuevoId = usuariosOracleRepository.insertUsuarioConRolYEdadYRetornarId(
+                    dto.getNombre(),
+                    dto.getCorreo(),
+                    dto.getPassword(),
+                    dto.getEdad(),
+                    dto.getRolId());
+
+            UsuariosOracle nuevoUsuario = usuariosOracleRepository.findById(nuevoId).orElse(null);
+
+            if (nuevoUsuario == null) {
+                return ResponseEntity.status(500)
+                        .body(Map.of("mensaje", "Usuario insertado pero no se pudo recuperar"));
+            }
+
+            UsuarioResponseDTO usuarioDTO = new UsuarioResponseDTO(nuevoUsuario);
+
+            return ResponseEntity.status(HttpStatus.CREATED)
+                    .body(Map.of(
+                            "mensaje", "Usuario registrado con éxito",
+                            "usuario", usuarioDTO));
         } catch (DataAccessException e) {
-            return Map.of("mensaje", "Error al registrar el usuario: " + e.getRootCause().getMessage());
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                    .body(Map.of("mensaje", "Error al registrar el usuario: " + e.getRootCause().getMessage()));
         }
     }
 
@@ -70,18 +97,32 @@ public class UsuariosOracleService {
     }
 
     // Actualizar usuario
-    public ResponseEntity<?> actualizarUsuario(Long id, String nombre, String correo, String password) {
-        int filasActualizadas = usuariosOracleRepository.actualizarUsuario(id, nombre, correo, password);
+    public ResponseEntity<?> actualizarUsuario(Long id, UsuarioDTO dto) {
+        try {
+            // Aseguramos que el ID se asigne al DTO antes de convertirlo a JSON
+            dto.setIdUsuario(id);
+            String jsonIn = objectMapper.writeValueAsString(dto);
 
-        if (filasActualizadas == 0) {
-            return ResponseEntity.status(404).body(
-                    Map.of("mensaje", "Error al actualizar el usuario"));
+            // Llamar al repositorio/procedimiento
+            UsuarioActualizacionResponse resp = customRepo.actualizarUsuarioDesdeJson(jsonIn);
+
+            // Obtener status directamente como int
+            int code = resp.getStatus();
+
+            HttpStatus status = switch (code) {
+                case 200 -> HttpStatus.OK;
+                case 404 -> HttpStatus.NOT_FOUND;
+                case 400 -> HttpStatus.BAD_REQUEST;
+                default -> HttpStatus.INTERNAL_SERVER_ERROR;
+            };
+
+            return ResponseEntity.status(status).body(resp);
+
+        } catch (JsonProcessingException e) {
+            return ResponseEntity
+                    .status(HttpStatus.INTERNAL_SERVER_ERROR)
+                    .body("Error serializando JSON de entrada");
         }
-
-        UsuariosOracle usuario = usuariosOracleRepository.findById(id).orElse(null);
-
-        return ResponseEntity.ok(
-                Map.of("mensaje", "Usuario actualizado correctamente", "usuario", usuario));
     }
 
     // Eliminar usuario

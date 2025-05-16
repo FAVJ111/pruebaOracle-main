@@ -2,10 +2,32 @@ CREATE OR REPLACE TYPE usuario_obj_type AS OBJECT (
   id       NUMBER,
   nombre   VARCHAR2(100),
   correo   VARCHAR2(100),
-  password VARCHAR2(100)
+  password VARCHAR2(100),
+  edad     NUMBER
 );
 
-CREATE OR REPLACE TYPE usuario_tab_type AS TABLE OF usuario_obj_type;
+-- Crear un tipo compuesto para los datos del usuario
+CREATE OR REPLACE TYPE usuario_update_type AS OBJECT (
+  id_usuario   NUMBER,
+  nombre       VARCHAR2(100),
+  correo       VARCHAR2(100),
+  password     VARCHAR2(100),
+  edad         NUMBER,
+  rol_id       NUMBER
+);
+/
+
+--ALTER TABLE usuarios_oracle ADD rol_id NUMBER;
+
+--ALTER TABLE usuarios_oracle
+--ADD CONSTRAINT fk_usuario_rol
+--FOREIGN KEY (rol_id) REFERENCES roles_oracle(id);
+
+--DROP TYPE usuario_tab_type;
+
+--DROP TYPE usuario_obj_type;
+
+--CREATE OR REPLACE TYPE usuario_tab_type AS TABLE OF usuario_obj_type;
 
 SELECT object_name, object_type, status
   FROM user_objects
@@ -14,17 +36,7 @@ SELECT object_name, object_type, status
    'TRG_ROLES_BEFORE_INSERT'
  );
 
-
--- Insertar roles
-CREATE OR REPLACE PROCEDURE insert_rol (p_nombre IN VARCHAR2) AS
-BEGIN
-  INSERT INTO roles_oracle(id, nombre)
-  VALUES(rol_oracle_seq.NEXTVAL, p_nombre);
-END insert_rol;
-/
-
-
--- Trigger para roles_oracle
+ -- Trigger para roles_oracle
 CREATE OR REPLACE TRIGGER trg_roles_before_insert
 BEFORE INSERT ON roles_oracle
 FOR EACH ROW
@@ -34,28 +46,6 @@ BEGIN
   END IF;
 END;
 /
-
--- Insertar usaurios
-CREATE OR REPLACE PROCEDURE insert_usuario_con_rol_y_edad(
-    p_nombre   IN VARCHAR2,
-    p_correo   IN VARCHAR2,
-    p_password IN VARCHAR2,
-    p_edad     IN NUMBER,
-    p_rol_id   IN NUMBER
-) AS
-    v_new_id NUMBER;
-BEGIN
-    -- 1) Inserto el usuario y capturo su ID
-    INSERT INTO usuarios_oracle (id, nombre, correo, password, edad)
-    VALUES (usuario_oracle_seq.NEXTVAL, p_nombre, p_correo, p_password, p_edad)
-    RETURNING id INTO v_new_id;
-
-    -- 2) Asigno el rol que ya debe existir en roles_oracle
-    INSERT INTO usuario_oracle_roles (usuario_id, rol_id)
-    VALUES (v_new_id, p_rol_id);
-END insert_usuario_con_rol_y_edad;
-/
-
 
 -- Trigger para usuarios_oracle
 CREATE OR REPLACE TRIGGER trg_usuarios_before_insert
@@ -68,148 +58,308 @@ BEGIN
 END;
 /
 
-
 SELECT object_name, object_type, status
   FROM user_objects
  WHERE object_name = 'SP_INFO_USUARIO';
 
+-- 1. Insertar rol con validación
+CREATE OR REPLACE PROCEDURE insert_rol (p_nombre IN VARCHAR2) AS
+BEGIN
+  IF p_nombre IS NULL OR TRIM(p_nombre) = '' THEN
+    RAISE_APPLICATION_ERROR(-20001, 'El nombre del rol no puede estar vacío');
+  END IF;
 
--- 1. Listar usuarios
+  INSERT INTO roles_oracle(id, nombre)
+  VALUES(rol_oracle_seq.NEXTVAL, p_nombre);
+
+EXCEPTION
+  WHEN DUP_VAL_ON_INDEX THEN
+    RAISE_APPLICATION_ERROR(-20002, 'Ya existe un rol con ese nombre');
+  WHEN OTHERS THEN
+    RAISE_APPLICATION_ERROR(-20003, 'Error al insertar rol: ' || SQLERRM);
+END insert_rol;
+/
+
+-- 2. Insertar usuario con rol y edad, con validaciones
+CREATE OR REPLACE PROCEDURE insert_usuario_con_rol_y_edad(
+    p_nombre    IN VARCHAR2,
+    p_correo    IN VARCHAR2,
+    p_password  IN VARCHAR2,
+    p_edad      IN NUMBER,
+    p_rol_id    IN NUMBER,
+    p_id_out    OUT NUMBER  -- NUEVO PARÁMETRO OUT
+) AS
+    v_new_id NUMBER;
+    v_count  NUMBER;
+BEGIN
+    -- Validaciones básicas
+    IF p_nombre IS NULL OR TRIM(p_nombre) = '' THEN
+        RAISE_APPLICATION_ERROR(-20011, 'El nombre no puede estar vacío');
+    ELSIF p_correo IS NULL OR INSTR(p_correo, '@') = 0 THEN
+        RAISE_APPLICATION_ERROR(-20012, 'Correo inválido');
+    ELSIF p_password IS NULL OR LENGTH(p_password) < 6 THEN
+        RAISE_APPLICATION_ERROR(-20013, 'La contraseña debe tener al menos 6 caracteres');
+    ELSIF p_edad IS NULL OR p_edad < 0 OR p_edad > 150 THEN
+        RAISE_APPLICATION_ERROR(-20014, 'Edad inválida');
+    END IF;
+
+    -- Verificar que el rol exista
+    SELECT COUNT(*) INTO v_count
+    FROM roles_oracle
+    WHERE id = p_rol_id;
+
+    IF v_count = 0 THEN
+        RAISE_APPLICATION_ERROR(-20015, 'El rol indicado no existe');
+    END IF;
+
+    -- Inserción usuario
+    INSERT INTO usuarios_oracle(id, nombre, correo, password, edad)
+    VALUES (usuario_oracle_seq.NEXTVAL, p_nombre, p_correo, p_password, p_edad)
+    RETURNING id INTO v_new_id;
+
+    -- Asignar rol
+    INSERT INTO usuario_oracle_roles (usuario_id, rol_id)
+    VALUES (v_new_id, p_rol_id);
+
+    -- Retornar el ID
+    p_id_out := v_new_id;
+
+EXCEPTION
+    WHEN DUP_VAL_ON_INDEX THEN
+        RAISE_APPLICATION_ERROR(-20016, 'Ya existe un usuario con ese correo');
+    WHEN OTHERS THEN
+        RAISE_APPLICATION_ERROR(-20017, 'Error al insertar usuario: ' || SQLERRM);
+END insert_usuario_con_rol_y_edad;
+/
+
+-- 3. Listar usuarios (PIPELINED) con manejo de excepción global
 CREATE OR REPLACE FUNCTION fn_listar_usuarios
   RETURN usuario_tab_type
   PIPELINED
 AS
 BEGIN
-  FOR r IN (SELECT id, nombre, correo, password FROM usuarios_oracle)
+  FOR r IN (SELECT id, nombre, correo, password, edad
+              FROM usuarios_oracle)
   LOOP
-    PIPE ROW(
-      usuario_obj_type(r.id, r.nombre, r.correo, r.password)
-    );
+    PIPE ROW(usuario_obj_type(r.id, r.nombre, r.correo, r.password, r.edad));
   END LOOP;
   RETURN;
+
+EXCEPTION
+  WHEN NO_DATA_FOUND THEN
+    NULL;  -- no hay filas, retorna vacío
+  WHEN OTHERS THEN
+    RAISE_APPLICATION_ERROR(-20021, 'Error al listar usuarios: ' || SQLERRM);
 END fn_listar_usuarios;
 /
 
--- 2. Buscar usuarios por filtro
+-- 4. Buscar usuarios por filtro (PIPELINED)
 CREATE OR REPLACE FUNCTION fn_buscar_usuarios_por_filtro(
   p_filtro IN VARCHAR2
 ) RETURN usuario_tab_type
   PIPELINED
 AS
 BEGIN
+  IF p_filtro IS NULL THEN
+    RAISE_APPLICATION_ERROR(-20022, 'El filtro no puede ser nulo');
+  END IF;
+
   FOR r IN (
-    SELECT id, nombre, correo, password
+    SELECT id, nombre, correo, password, edad
       FROM usuarios_oracle
-     WHERE nombre LIKE '%'||p_filtro||'%'
-        OR correo LIKE '%'||p_filtro||'%'
+     WHERE LOWER(nombre) LIKE '%'||LOWER(p_filtro)||'%'
+        OR LOWER(correo) LIKE '%'||LOWER(p_filtro)||'%'
   ) LOOP
-    PIPE ROW(
-      usuario_obj_type(
-        r.id,
-        r.nombre,
-        r.correo,
-        r.password
-      )
-    );
+    PIPE ROW(usuario_obj_type(r.id, r.nombre, r.correo, r.password, r.edad));
   END LOOP;
   RETURN;
+
+EXCEPTION
+  WHEN OTHERS THEN
+    RAISE_APPLICATION_ERROR(-20023, 'Error al buscar usuarios: ' || SQLERRM);
 END fn_buscar_usuarios_por_filtro;
 /
 
--- 3. Obtener usuario por ID
+-- 5. Obtener usuario por ID (PIPELINED)
 CREATE OR REPLACE FUNCTION fn_obtener_usuario_por_id(
   p_id_usuario IN NUMBER
 ) RETURN usuario_tab_type
   PIPELINED
 AS
 BEGIN
+  IF p_id_usuario IS NULL OR p_id_usuario <= 0 THEN
+    RAISE_APPLICATION_ERROR(-20024, 'ID de usuario inválido');
+  END IF;
+
   FOR r IN (
-    SELECT id, nombre, correo, password
+    SELECT id, nombre, correo, password, edad
       FROM usuarios_oracle
      WHERE id = p_id_usuario
   ) LOOP
-    PIPE ROW(
-      usuario_obj_type(r.id, r.nombre, r.correo, r.password)
-    );
+    PIPE ROW(usuario_obj_type(r.id, r.nombre, r.correo, r.password, r.edad));
   END LOOP;
   RETURN;
+
+EXCEPTION
+  WHEN NO_DATA_FOUND THEN
+    NULL;  -- retorna vacío si no existe
+  WHEN OTHERS THEN
+    RAISE_APPLICATION_ERROR(-20025, 'Error al obtener usuario: ' || SQLERRM);
 END fn_obtener_usuario_por_id;
 /
 
--- 4. Actualizar usuario
-CREATE OR REPLACE FUNCTION fn_actualizar_usuario(
-  p_id_usuario IN NUMBER,
-  p_nombre     IN VARCHAR2,
-  p_correo     IN VARCHAR2,
-  p_password   IN VARCHAR2
-) RETURN VARCHAR2 IS
-  v_dummy NUMBER;
+-- 6. Función para actualizar usuario
+create or replace  PROCEDURE fn_actualizar_usuario_json2(
+  p_usuario_json  IN  CLOB,
+  p_message       OUT VARCHAR2,
+  p_status        OUT VARCHAR2,
+  p_usuario_out   OUT CLOB
+)
+IS
+  -- Variables para extraer datos del JSON
+  v_id_usuario   NUMBER;
+  v_nombre       VARCHAR2(100);
+  v_correo       VARCHAR2(100);
+  v_password     VARCHAR2(100);
+  v_edad         NUMBER;
+  v_rol_id       NUMBER;
+  v_json         JSON_OBJECT_T;
+  v_dummy        NUMBER;
+  v_clob         CLOB;
 BEGIN
-  -- Verificar si el usuario existe
+  -- Inicializar salida
+  p_usuario_out := EMPTY_CLOB();
+
+  -- Parsear el JSON de entrada
+  v_json := JSON_OBJECT_T.parse(p_usuario_json);
+
+  v_id_usuario := v_json.get_Number('idUsuario');
+  v_nombre     := v_json.get_String('nombre');
+  v_correo     := v_json.get_String('correo');
+  v_password   := v_json.get_String('password');
+  v_edad       := v_json.get_Number('edad');
+  v_rol_id     := v_json.get_Number('rolId');
+
+  -- Validaciones
+  IF v_id_usuario IS NULL OR v_id_usuario <= 0 THEN
+    p_message := 'ID de usuario inválido';
+    p_status  := '400';
+    RETURN;
+  ELSIF v_nombre IS NULL OR TRIM(v_nombre) = '' THEN
+    p_message := 'El nombre no puede estar vacío';
+    p_status  := '400';
+    RETURN;
+  ELSIF v_correo IS NULL OR TRIM(v_correo) = '' OR INSTR(v_correo, '@') = 0 THEN
+    p_message := 'Correo inválido';
+    p_status  := '400';
+    RETURN;
+  ELSIF v_edad IS NULL OR v_edad < 0 OR v_edad > 150 THEN
+    p_message := 'Edad inválida';
+    p_status  := '400';
+    RETURN;
+  END IF;
+
+  -- Verificar existencia
   BEGIN
-    SELECT 1 INTO v_dummy FROM usuarios_oracle WHERE id = p_id_usuario;
+    SELECT 1 INTO v_dummy FROM usuarios_oracle WHERE id = v_id_usuario;
   EXCEPTION
     WHEN NO_DATA_FOUND THEN
-      RETURN 'El usuario no existe';
-    WHEN OTHERS THEN
-      RETURN 'Error al verificar existencia: ' || SQLERRM;
+      p_message := 'El usuario no existe';
+      p_status  := '404';
+      RETURN;
   END;
 
-  -- Actualizar usuario
-  BEGIN
-    UPDATE usuarios_oracle
-    SET nombre = p_nombre,
-        correo = p_correo,
-        password = p_password
-    WHERE id = p_id_usuario;
+  -- Actualizar
+  UPDATE usuarios_oracle
+     SET nombre   = v_nombre,
+         correo   = v_correo,
+         password = v_password,
+         edad     = v_edad,
+         rol_id   = v_rol_id
+   WHERE id = v_id_usuario;
 
-    RETURN 'Usuario actualizado correctamente';
-  EXCEPTION
-    WHEN OTHERS THEN
-      RETURN 'Error al actualizar: ' || SQLERRM;
-  END;
-END;
+  IF SQL%ROWCOUNT = 0 THEN
+    p_message := 'No se actualizó ningún registro';
+    p_status  := '400';
+    RETURN;
+  END IF;
+
+  -- Construir JSON del usuario actualizado
+  SELECT JSON_OBJECT(
+           'id' VALUE u.id,
+           'nombre' VALUE u.nombre,
+           'correo' VALUE u.correo,
+           'edad' VALUE u.edad,
+           'rol_id' VALUE u.rol_id
+         ) 
+    INTO v_clob
+    FROM usuarios_oracle u
+   WHERE u.id = v_id_usuario;
+
+  p_usuario_out := v_clob;
+
+  -- Éxito
+  p_message := 'Usuario actualizado correctamente';
+  p_status  := '200';
+
+EXCEPTION
+  WHEN OTHERS THEN
+    -- Mensaje genérico sin detalles de ORA
+    p_message := 'Error interno al actualizar usuario';
+    p_status  := '500';
+    p_usuario_out := EMPTY_CLOB();
+END fn_actualizar_usuario_json2;
 /
 
 
--- 5. Eliminar usuario
+-- 7. Eliminar usuario con comprobación
 CREATE OR REPLACE PROCEDURE sp_eliminar_usuario (
     p_id_usuario IN NUMBER
 ) AS
 BEGIN
-    DELETE FROM usuarios_oracle WHERE id = p_id_usuario;
+  IF p_id_usuario IS NULL OR p_id_usuario <= 0 THEN
+    RAISE_APPLICATION_ERROR(-20031, 'ID de usuario inválido');
+  END IF;
+
+  DELETE FROM usuarios_oracle
+   WHERE id = p_id_usuario;
+
+  IF SQL%ROWCOUNT = 0 THEN
+    RAISE_APPLICATION_ERROR(-20032, 'Usuario no encontrado para eliminar');
+  END IF;
+
+EXCEPTION
+  WHEN OTHERS THEN
+    RAISE_APPLICATION_ERROR(-20033, 'Error al eliminar usuario: ' || SQLERRM);
 END sp_eliminar_usuario;
 /
 
-ALTER TABLE usuarios_oracle
-  ADD (edad NUMBER NULL);
-
--- 1 IN: p_id_usuario
--- 4 OUT: p_nombre, p_correo, p_num_roles, p_edad
+-- 8. Obtener info de usuario (cursor) con validación
 CREATE OR REPLACE PROCEDURE sp_info_usuario(
    p_id_usuario IN  NUMBER,
-   p_nombre     OUT VARCHAR2,
-   p_correo     OUT VARCHAR2,
-   p_num_roles  OUT NUMBER,
-   p_edad       OUT NUMBER
+   p_result     OUT SYS_REFCURSOR
 ) AS
 BEGIN
-   SELECT nombre, correo, edad
-     INTO p_nombre, p_correo, p_edad
-     FROM usuarios_oracle
-    WHERE id = p_id_usuario;
+   IF p_id_usuario IS NULL OR p_id_usuario <= 0 THEN
+     RAISE_APPLICATION_ERROR(-20041, 'ID de usuario inválido');
+   END IF;
 
-   SELECT COUNT(*)
-     INTO p_num_roles
-     FROM usuario_oracle_roles
-    WHERE usuario_id = p_id_usuario;
+   OPEN p_result FOR
+      SELECT u.nombre,
+             u.correo,
+             u.edad,
+             (SELECT COUNT(*) 
+                FROM usuario_oracle_roles r 
+               WHERE r.usuario_id = u.id) AS num_roles
+        FROM usuarios_oracle u
+       WHERE u.id = p_id_usuario;
 
 EXCEPTION
    WHEN NO_DATA_FOUND THEN
-     p_nombre    := NULL;
-     p_correo    := NULL;
-     p_num_roles := 0;
-     p_edad      := NULL;
+     -- Si no existe, abrimos un cursor vacío
+     OPEN p_result FOR SELECT NULL nombre, NULL correo, NULL edad, 0 num_roles FROM DUAL WHERE 1=0;
+   WHEN OTHERS THEN
+     RAISE_APPLICATION_ERROR(-20042, 'Error al obtener info de usuario: ' || SQLERRM);
 END sp_info_usuario;
 /
 
